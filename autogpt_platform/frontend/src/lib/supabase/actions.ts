@@ -221,3 +221,95 @@ export async function refreshSession() {
     },
   );
 }
+
+export interface LegacySessionCleanupResult {
+  hadLegacySession: boolean;
+  shouldReauth: boolean;
+  message: string;
+}
+
+export async function cleanupLegacySessions(): Promise<LegacySessionCleanupResult> {
+  return await Sentry.withServerActionInstrumentation(
+    "cleanupLegacySessions",
+    {},
+    async () => {
+      const supabase = await getServerSupabase();
+
+      if (!supabase) {
+        return {
+          hadLegacySession: false,
+          shouldReauth: false,
+          message: "Supabase not available",
+        };
+      }
+
+      try {
+        const {
+          data: { user },
+          error,
+        } = await supabase.auth.getUser();
+
+        if (
+          error?.message.includes("invalid") ||
+          error?.message.includes("expired")
+        ) {
+          await supabase.auth.signOut({ scope: "global" });
+          revalidatePath("/", "layout");
+
+          return {
+            hadLegacySession: true,
+            shouldReauth: true,
+            message: "Legacy session detected and cleaned up",
+          };
+        }
+
+        return {
+          hadLegacySession: false,
+          shouldReauth: false,
+          message: user ? "Session is valid" : "No active session",
+        };
+      } catch (error) {
+        console.error("Legacy session cleanup error:", error);
+
+        try {
+          await supabase.auth.signOut({ scope: "global" });
+          revalidatePath("/", "layout");
+        } catch (logoutError) {
+          console.error("Failed to logout during cleanup:", logoutError);
+        }
+
+        return {
+          hadLegacySession: true,
+          shouldReauth: true,
+          message: "Session cleanup failed, forced logout",
+        };
+      }
+    },
+  );
+}
+
+export async function detectAndCleanupLegacySessions(
+  currentPath: string,
+): Promise<SessionValidationResult> {
+  return await Sentry.withServerActionInstrumentation(
+    "detectAndCleanupLegacySessions",
+    {},
+    async () => {
+      // First try to cleanup any legacy sessions
+      const cleanupResult = await cleanupLegacySessions();
+
+      if (cleanupResult.shouldReauth) {
+        // Legacy session was found and cleaned up, user needs to re-authenticate
+        const redirectPath = getRedirectPath(currentPath);
+        return {
+          user: null,
+          isValid: false,
+          redirectPath: redirectPath || "/login",
+        };
+      }
+
+      // No legacy session issues, proceed with normal validation
+      return await validateSession(currentPath);
+    },
+  );
+}

@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { detectAndCleanupLegacySessions } from "./actions";
 import { getCookieSettings, isAdminPage, isProtectedPage } from "./helpers";
 
 export async function updateSession(request: NextRequest) {
@@ -16,77 +17,122 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
+  const pathname = request.nextUrl.pathname;
+
+  // Use the server action to detect and cleanup legacy sessions
   try {
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return request.cookies.getAll();
-          },
-          setAll(cookiesToSet) {
-            cookiesToSet.forEach(({ name, value }) =>
-              request.cookies.set(name, value),
-            );
-            supabaseResponse = NextResponse.next({
-              request,
-            });
-            cookiesToSet.forEach(({ name, value, options }) => {
-              supabaseResponse.cookies.set(name, value, {
-                ...options,
-                ...getCookieSettings(),
+    const sessionResult = await detectAndCleanupLegacySessions(pathname);
+
+    // If session is invalid and we have a redirect path, redirect immediately
+    if (!sessionResult.isValid && sessionResult.redirectPath) {
+      const url = request.nextUrl.clone();
+      url.pathname = sessionResult.redirectPath;
+
+      // Add session_migrated flag if this was due to legacy session cleanup
+      if (sessionResult.redirectPath === "/login") {
+        url.searchParams.set("session_migrated", "true");
+      }
+
+      return NextResponse.redirect(url);
+    }
+
+    // If we have a valid session, continue with normal middleware flow
+    if (sessionResult.isValid && sessionResult.user) {
+      const _supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: {
+            getAll() {
+              return request.cookies.getAll();
+            },
+            setAll(cookiesToSet) {
+              cookiesToSet.forEach(({ name, value }) =>
+                request.cookies.set(name, value),
+              );
+              supabaseResponse = NextResponse.next({
+                request,
               });
-            });
+              cookiesToSet.forEach(({ name, value, options }) => {
+                supabaseResponse.cookies.set(name, value, {
+                  ...options,
+                  ...getCookieSettings(),
+                });
+              });
+            },
           },
         },
-      },
-    );
+      );
 
-    // IMPORTANT: Avoid writing any logic between createServerClient and
-    // supabase.auth.getUser(). A simple mistake could make it very hard to debug
-    // issues with users being randomly logged out.
+      const userRole = sessionResult.user.role;
+      const url = request.nextUrl.clone();
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    const userRole = user?.role;
-    const url = request.nextUrl.clone();
-    const pathname = request.nextUrl.pathname;
-
-    // AUTH REDIRECTS
-    // 1. Check if user is not authenticated but trying to access protected content
-    if (!user) {
-      const attemptingProtectedPage = isProtectedPage(pathname);
-      const attemptingAdminPage = isAdminPage(pathname);
-
-      if (attemptingProtectedPage || attemptingAdminPage) {
-        url.pathname = "/login";
+      // Check admin access
+      if (sessionResult.user && userRole !== "admin" && isAdminPage(pathname)) {
+        url.pathname = "/marketplace";
         return NextResponse.redirect(url);
       }
     }
 
-    // 2. Check if user is authenticated but lacks admin role when accessing admin pages
-    if (user && userRole !== "admin" && isAdminPage(pathname)) {
-      url.pathname = "/marketplace";
-      return NextResponse.redirect(url);
-    }
+    // Handle unauthenticated users trying to access protected pages
+    if (!sessionResult.isValid) {
+      const attemptingProtectedPage = isProtectedPage(pathname);
+      const attemptingAdminPage = isAdminPage(pathname);
 
-    // IMPORTANT: You *must* return the supabaseResponse object as it is. If you're
-    // creating a new response object with NextResponse.next() make sure to:
-    // 1. Pass the request in it, like so:
-    //    const myNewResponse = NextResponse.next({ request })
-    // 2. Copy over the cookies, like so:
-    //    myNewResponse.cookies.setAll(supabaseResponse.cookies.getAll())
-    // 3. Change the myNewResponse object to fit your needs, but avoid changing
-    //    the cookies!
-    // 4. Finally:
-    //    return myNewResponse
-    // If this is not done, you may be causing the browser and server to go out
-    // of sync and terminate the user's session prematurely!
+      if (attemptingProtectedPage || attemptingAdminPage) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/login";
+        return NextResponse.redirect(url);
+      }
+    }
   } catch (error) {
     console.error("Failed to run Supabase middleware", error);
+
+    // Fallback: if session detection fails, try basic supabase client approach
+    try {
+      const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: {
+            getAll() {
+              return request.cookies.getAll();
+            },
+            setAll(cookiesToSet) {
+              cookiesToSet.forEach(({ name, value }) =>
+                request.cookies.set(name, value),
+              );
+              supabaseResponse = NextResponse.next({
+                request,
+              });
+              cookiesToSet.forEach(({ name, value, options }) => {
+                supabaseResponse.cookies.set(name, value, {
+                  ...options,
+                  ...getCookieSettings(),
+                });
+              });
+            },
+          },
+        },
+      );
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        const attemptingProtectedPage = isProtectedPage(pathname);
+        const attemptingAdminPage = isAdminPage(pathname);
+
+        if (attemptingProtectedPage || attemptingAdminPage) {
+          const url = request.nextUrl.clone();
+          url.pathname = "/login";
+          return NextResponse.redirect(url);
+        }
+      }
+    } catch (fallbackError) {
+      console.error("Fallback middleware error:", fallbackError);
+    }
   }
 
   return supabaseResponse;
