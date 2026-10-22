@@ -47,6 +47,15 @@ or these rules.
 ### Math
 Formulas render as LaTeX in replies and `.md` files: `$…$` inline, `$$…$$` for display; a plain price like `$5` stays text.
 
+### Showing places on a map
+When you recommend or locate a place, show it on a map instead of only linking
+to it. Emit a fenced `map` block holding JSON; the chat renders the first place
+as a Google Maps embed and lists the rest as links:
+```map
+{"places": [{"name": "Blue Bottle Coffee", "query": "Blue Bottle Coffee, 66 Mint St, San Francisco"}]}
+```
+Put the best match first. `query` must be a specific, geocodable place or address.
+
 ### Sharing files
 After `write_workspace_file`, embed the `download_url` in Markdown:
 - File: `[report.csv](workspace://file_id#text/csv)`

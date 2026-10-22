@@ -413,3 +413,23 @@ class TestConnectedAccountNotes:
             CopilotPermissions(providers=["github"], providers_exclude=True)
         )
         assert "none of the user's connected accounts" in none
+
+
+class TestMapGuidance:
+    @pytest.mark.parametrize("use_e2b", [False, True])
+    def test_sdk_supplement_tells_the_model_how_to_show_places(self, use_e2b):
+        result = prompting.get_sdk_supplement(use_e2b=use_e2b)
+        assert "### Showing places on a map" in result
+        assert "```map" in result
+
+    def test_baseline_mode_gets_the_same_guidance(self):
+        assert "### Showing places on a map" in prompting.SHARED_TOOL_NOTES
+
+    def test_the_example_block_is_valid_json_with_a_query(self):
+        import json
+        import re
+
+        match = re.search(r"```map\n(.*?)\n```", prompting.SHARED_TOOL_NOTES, re.S)
+        assert match is not None
+        places = json.loads(match.group(1))["places"]
+        assert places and all(p["query"] for p in places)

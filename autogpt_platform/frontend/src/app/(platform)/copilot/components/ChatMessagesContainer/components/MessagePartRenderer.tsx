@@ -5,6 +5,8 @@ import { StoppedTaskCard } from "./StoppedTaskCard";
 import { ToolUIPart, UIDataTypes, UIMessage, UITools } from "ai";
 import { useMemo } from "react";
 import { ArtifactCard } from "../../ArtifactCard/ArtifactCard";
+import { MapEmbedCard } from "../../MapEmbed/MapEmbedCard";
+import { splitMapBlocks } from "../../MapEmbed/helpers";
 import { AskQuestionTool } from "../../../tools/AskQuestion/AskQuestion";
 import { ConnectIntegrationTool } from "../../../tools/ConnectIntegrationTool/ConnectIntegrationTool";
 import { CreateAgentTool } from "../../../tools/CreateAgent/CreateAgent";
@@ -103,15 +105,26 @@ function TextWithArtifactCards({
     [text, fileUrlBuilder],
   );
 
+  // Fenced ```map blocks render inline as a Google Maps card; everything
+  // else (including malformed or still-streaming map blocks) stays markdown.
+  const segments = useMemo(() => splitMapBlocks(resolved), [resolved]);
+
   // Text reads first, with the artifact cards trailing.
   return (
     <>
-      <CredentialMentionMarkdown
-        components={STREAMDOWN_COMPONENTS}
-        className="[&_li]:py-0"
-      >
-        {resolved}
-      </CredentialMentionMarkdown>
+      {segments.map((segment, index) =>
+        segment.kind === "map" ? (
+          <MapEmbedCard key={`map-${index}`} places={segment.places} />
+        ) : (
+          <CredentialMentionMarkdown
+            key={`text-${index}`}
+            components={STREAMDOWN_COMPONENTS}
+            className="[&_li]:py-0"
+          >
+            {segment.text}
+          </CredentialMentionMarkdown>
+        ),
+      )}
       {artifacts.length > 0 && (
         <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
           {artifacts.map((artifact) => (
